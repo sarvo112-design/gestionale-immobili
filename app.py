@@ -1,11 +1,10 @@
 import streamlit as st
 import pandas as pd
 import sqlite3
-from datetime import datetime
 
 # --- CONFIGURAZIONE PAGINA ---
 st.set_page_config(
-    page_title="Gestionale Affitti",
+    page_title="Gestionale Immobili",
     page_icon="🏠",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -13,14 +12,12 @@ st.set_page_config(
 
 # --- GESTIONE LOGIN & SICUREZZA ---
 def check_password():
-    """Ritorna True se l'utente ha inserito la password corretta."""
     if "password_correct" not in st.session_state:
         st.session_state["password_correct"] = False
 
     if st.session_state["password_correct"]:
         return True
 
-    # Interfaccia di Login
     st.markdown("<br><br><h2 style='text-align: center;'>🔒 Accesso Riservato - Gestionale Immobili</h2>", unsafe_allow_html=True)
     col1, col2, col3 = st.columns([1, 2, 1])
     
@@ -41,60 +38,43 @@ def check_password():
 if not check_password():
     st.stop()
 
-# --- DATABASE INIZIALIZZAZIONE ---
-def get_db():
-    conn = sqlite3.connect("gestionale_estivo.db", check_same_thread=False)
-    return conn
-
-conn = get_db()
+# --- DATABASE & AUTO-AGGIORNAMENTO STRUTTURA ---
+conn = sqlite3.connect("gestionale_estivo.db", check_same_thread=False)
 c = conn.cursor()
 
-# Tabella Locali
+# Crea le tabelle se non esistono
 c.execute('''CREATE TABLE IF NOT EXISTS locali
-             (id INTEGER PRIMARY KEY AUTOINCREMENT, 
-              nome TEXT UNIQUE, 
-              indirizzo TEXT, 
-              periodo TEXT, 
-              canone REAL)''')
-
-# Tabella Utenze / Affitti Invernali
+             (id INTEGER PRIMARY KEY AUTOINCREMENT, nome TEXT UNIQUE, indirizzo TEXT, periodo TEXT, canone REAL)''')
 c.execute('''CREATE TABLE IF NOT EXISTS utenze
-             (id INTEGER PRIMARY KEY AUTOINCREMENT, 
-              locale_id INTEGER, 
-              mese TEXT, 
-              luce REAL DEFAULT 0, 
-              gas REAL DEFAULT 0, 
-              acqua REAL DEFAULT 0, 
-              spese_condominio REAL DEFAULT 0, 
-              affitto_versato REAL DEFAULT 0, 
-              note TEXT, 
-              pagato TEXT)''')
-
-# Tabella Prenotazioni Estive
+             (id INTEGER PRIMARY KEY AUTOINCREMENT, locale_id INTEGER, mese TEXT)''')
 c.execute('''CREATE TABLE IF NOT EXISTS prenotazioni
-             (id INTEGER PRIMARY KEY AUTOINCREMENT, 
-              locale_id INTEGER, 
-              ospite TEXT, 
-              telefono TEXT, 
-              checkin TEXT, 
-              checkout TEXT, 
-              totale REAL, 
-              acconto REAL, 
-              saldo REAL, 
-              stato TEXT, 
-              note TEXT)''')
-
-# Tabella Uscite / Spese
+             (id INTEGER PRIMARY KEY AUTOINCREMENT, locale_id INTEGER, ospite TEXT)''')
 c.execute('''CREATE TABLE IF NOT EXISTS uscite
-             (id INTEGER PRIMARY KEY AUTOINCREMENT, 
-              data_spesa TEXT, 
-              categoria TEXT, 
-              descrizione TEXT, 
-              importo REAL, 
-              inserito_da TEXT)''')
+             (id INTEGER PRIMARY KEY AUTOINCREMENT, data_spesa TEXT, categoria TEXT, descrizione TEXT, importo REAL, inserito_da TEXT)''')
+
+# Funzione per aggiungere colonne mancanti senza perdere i dati esistenti
+def ensure_column(table, column, col_type):
+    try:
+        c.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass # La colonna esiste già
+
+# Aggiorna la tabella utenze se mancano colonne
+for col, col_type in [("luce", "REAL DEFAULT 0"), ("gas", "REAL DEFAULT 0"), ("acqua", "REAL DEFAULT 0"), 
+                      ("spese_condominio", "REAL DEFAULT 0"), ("affitto_versato", "REAL DEFAULT 0"), 
+                      ("note", "TEXT"), ("pagato", "TEXT")]:
+    ensure_column("utenze", col, col_type)
+
+# Aggiorna la tabella prenotazioni se mancano colonne
+for col, col_type in [("telefono", "TEXT"), ("checkin", "TEXT"), ("checkout", "TEXT"), 
+                      ("totale", "REAL DEFAULT 0"), ("acconto", "REAL DEFAULT 0"), 
+                      ("saldo", "REAL DEFAULT 0"), ("stato", "TEXT"), ("note", "TEXT")]:
+    ensure_column("prenotazioni", col, col_type)
+
 conn.commit()
 
-# --- SIDEBAR & BARRA DI NAVIGAZIONE ---
+# --- NAVIGAZIONE ---
 st.sidebar.title("🏡 Gestionale Immobili")
 st.sidebar.markdown("---")
 
@@ -113,14 +93,11 @@ if st.sidebar.button("🚪 Esci (Logout)"):
     st.session_state["password_correct"] = False
     st.rerun()
 
-# ---------------------------------------------------------
 # 1. ANAGRAFICA LOCALI
-# ---------------------------------------------------------
 if menu == "🏠 Anagrafica Locali":
     st.title("🏠 Anagrafica Locali e Immobili")
-    st.caption("Gestisci le schede dei tuoi immobili registrati")
     
-    with st.expander("➕ Aggiungi / Modifica Un Nuovo Locale", expanded=False):
+    with st.expander("➕ Aggiungi Nuovo Locale", expanded=False):
         with st.form("form_locale", clear_on_submit=True):
             col_a, col_b = st.columns(2)
             nome_loc = col_a.text_input("Nome Identificativo (es. CUPOLE GIÙ)*")
@@ -128,24 +105,18 @@ if menu == "🏠 Anagrafica Locali":
             periodo_loc = col_a.text_input("Tipologia / Periodo (es. Settembre - Maggio)")
             canone_loc = col_b.number_input("Canone Mensile di Riferimento (€)", min_value=0.0, step=50.0)
             
-            btn_salva = st.form_submit_button("💾 Salva Locale")
-            if btn_salva:
-                if nome_loc.strip():
-                    try:
-                        c.execute("INSERT INTO locali (nome, indirizzo, periodo, canone) VALUES (?, ?, ?, ?)",
-                                  (nome_loc.strip().upper(), indirizzo_loc, periodo_loc, canone_loc))
-                        conn.commit()
-                        st.success(f"Locale '{nome_loc.upper()}' salvato con successo!")
-                        st.rerun()
-                    except sqlite3.IntegrityError:
-                        st.error("Un locale con questo nome esiste già!")
-                else:
-                    st.warning("Inserisci almeno il nome del locale.")
+            if st.form_submit_button("💾 Salva Locale") and nome_loc.strip():
+                try:
+                    c.execute("INSERT INTO locali (nome, indirizzo, periodo, canone) VALUES (?, ?, ?, ?)",
+                              (nome_loc.strip().upper(), indirizzo_loc, periodo_loc, canone_loc))
+                    conn.commit()
+                    st.success(f"Locale '{nome_loc.upper()}' salvato!")
+                    st.rerun()
+                except sqlite3.IntegrityError:
+                    st.error("Un locale con questo nome esiste già!")
 
-    # Visualizzazione Locali
     locali_df = pd.read_sql_query("SELECT * FROM locali ORDER BY nome ASC", conn)
     if not locali_df.empty:
-        st.subheader("Elenco Immobili Registrati")
         cols = st.columns(2)
         for idx, row in locali_df.iterrows():
             with cols[idx % 2]:
@@ -158,20 +129,17 @@ if menu == "🏠 Anagrafica Locali":
                     if st.button(f"🗑️ Elimina {row['nome']}", key=f"del_loc_{row['id']}"):
                         c.execute("DELETE FROM locali WHERE id=?", (row['id'],))
                         conn.commit()
-                        st.success("Locale eliminato!")
                         st.rerun()
     else:
         st.info("Nessun locale presente in archivio. Aggiungi il primo dal riquadro sopra.")
 
-# ---------------------------------------------------------
 # 2. AFFITTI INVERNALI & UTENZE
-# ---------------------------------------------------------
 elif menu == "❄️ Affitti Invernali & Utenze":
-    st.title("❄️ Gestione Affitti Invernali & Utenze Mese per Mese")
+    st.title("❄️ Gestione Affitti Invernali & Utenze")
     
     locali_df = pd.read_sql_query("SELECT * FROM locali ORDER BY nome ASC", conn)
     if locali_df.empty:
-        st.warning("⚠️ Prima di proseguire, inserisci almeno un locale nell'Anagrafica!")
+        st.warning("⚠️ Prima inserisci almeno un locale nell'Anagrafica!")
     else:
         locale_sel = st.selectbox("Seleziona Locale:", locali_df["nome"].tolist())
         locale_id = locali_df[locali_df["nome"] == locale_sel]["id"].values[0]
@@ -190,18 +158,14 @@ elif menu == "❄️ Affitti Invernali & Utenze":
                 cond_val = c_d.number_input("Condominio (€)", min_value=0.0, step=10.0)
                 
                 note_u = st.text_input("Note generali")
-                btn_u = st.form_submit_button("💾 Salva Registrazione Mese")
-                
-                if btn_u and mese_ref.strip():
-                    c.execute("""INSERT INTO utenze 
-                                 (locale_id, mese, luce, gas, acqua, spese_condominio, affitto_versato, note, pagato)
+                if st.form_submit_button("💾 Salva Registrazione Mese") and mese_ref.strip():
+                    c.execute("""INSERT INTO utenze (locale_id, mese, luce, gas, acqua, spese_condominio, affitto_versato, note, pagato)
                                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                               (locale_id, mese_ref.strip(), luce_val, gas_val, acqua_val, cond_val, affitto_v, note_u, stato_pag))
                     conn.commit()
-                    st.success("Mese registrato con successo!")
+                    st.success("Mese registrato!")
                     st.rerun()
 
-        st.subheader(f"Storico Utenze e Registri: {locale_sel}")
         utenze_df = pd.read_sql_query(
             "SELECT id, mese AS 'Mese', affitto_versato AS 'Affitto (€)', luce AS 'Luce (€)', gas AS 'Gas (€)', acqua AS 'Acqua (€)', spese_condominio AS 'Condominio (€)', pagato AS 'Stato', note AS 'Note' FROM utenze WHERE locale_id=? ORDER BY id DESC",
             conn, params=(locale_id,)
@@ -211,15 +175,13 @@ elif menu == "❄️ Affitti Invernali & Utenze":
         else:
             st.caption("Nessuna registrazione presente per questo locale.")
 
-# ---------------------------------------------------------
 # 3. PRENOTAZIONI ESTIVE
-# ---------------------------------------------------------
 elif menu == "☀️ Prenotazioni Estive":
     st.title("☀️ Calendario & Prenotazioni Estive")
     
     locali_df = pd.read_sql_query("SELECT * FROM locali ORDER BY nome ASC", conn)
     if locali_df.empty:
-        st.warning("⚠️ Prima di proseguire, inserisci almeno un locale nell'Anagrafica!")
+        st.warning("⚠️ Prima inserisci almeno un locale nell'Anagrafica!")
     else:
         locale_sel = st.selectbox("Seleziona Locale da Gestire:", locali_df["nome"].tolist())
         locale_id = locali_df[locali_df["nome"] == locale_sel]["id"].values[0]
@@ -239,53 +201,47 @@ elif menu == "☀️ Prenotazioni Estive":
                 acconto_p = col6.number_input("Caparra / Acconto Versato (€)", min_value=0.0, step=50.0)
                 
                 saldo_p = totale_p - acconto_p
-                st.info(f"💰 Saldo Da Incassare al Check-in: **{saldo_p:.2f} €**")
+                st.info(f"💰 Saldo Da Incassare: **{saldo_p:.2f} €**")
                 
-                stato_p = st.selectbox("Stato Prenotazione:", ["🟠 Caparra Ricevuta", "🟢 Saldato Completamente", "🔴 In Attesa Caparra", "⚫ Annullata"])
-                note_p = st.text_area("Note / Richieste particolari")
+                stato_p = st.selectbox("Stato:", ["🟠 Caparra Ricevuta", "🟢 Saldato Completamente", "🔴 In Attesa", "⚫ Annullata"])
+                note_p = st.text_area("Note")
                 
-                btn_p = st.form_submit_button("💾 Conferma e Salva Prenotazione")
-                if btn_p and nome_ospite.strip():
-                    c.execute("""INSERT INTO prenotazioni 
-                                 (locale_id, ospite, telefono, checkin, checkout, totale, acconto, saldo, stato, note)
+                if st.form_submit_button("💾 Salva Prenotazione") and nome_ospite.strip():
+                    c.execute("""INSERT INTO prenotazioni (locale_id, ospite, telefono, checkin, checkout, totale, acconto, saldo, stato, note)
                                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                               (locale_id, nome_ospite.strip(), tel_ospite, str(checkin_d), str(checkout_d), totale_p, acconto_p, saldo_p, stato_p, note_p))
                     conn.commit()
                     st.success("Prenotazione salvata!")
                     st.rerun()
 
-        st.subheader(f"Prenotazioni Registrate per {locale_sel}")
         preno_df = pd.read_sql_query(
-            "SELECT id, ospite AS 'Ospite', telefono AS 'Telefono', checkin AS 'Check-in', checkout AS 'Check-out', totale AS 'Totale (€)', acconto AS 'Acconto (€)', saldo AS 'Saldo (€)', stato AS 'Stato', note AS 'Note' FROM prenotazioni WHERE locale_id=? ORDER BY checkin ASC",
+            "SELECT id, ospite AS 'Ospite', telefono AS 'Telefono', checkin AS 'Check-in', checkout AS 'Check-out', totale AS 'Totale (€)', acconto AS 'Acconto (€)', saldo AS 'Saldo (€)', stato AS 'Stato', note AS 'Note' FROM prenotazioni WHERE locale_id=?",
             conn, params=(locale_id,)
         )
         if not preno_df.empty:
             st.dataframe(preno_df, use_container_width=True)
         else:
-            st.caption("Nessuna prenotazione presente per questo immobile.")
+            st.caption("Nessuna prenotazione presente.")
 
-# ---------------------------------------------------------
-# 4. REGISTRO USCITE / SPESE
-# ---------------------------------------------------------
+# 4. REGISTRO SPESE
 elif menu == "💸 Registro Uscite / Spese":
     st.title("💸 Registro Spese e Manutenzioni")
     
-    with st.expander("➕ Registra Nuova Uscita / Spesa"):
+    with st.expander("➕ Registra Nuova Uscita"):
         with st.form("form_spesa", clear_on_submit=True):
             col1, col2 = st.columns(2)
             d_spesa = col1.date_input("Data della Spesa")
-            cat_spesa = col2.selectbox("Categoria:", ["Manutenzione Ordinaria", "Lavori / Ristrutturazione", "Pulizie / Lavanderia", "Tasse / Bollette", "Acquisti Arredamento", "Altro"])
+            cat_spesa = col2.selectbox("Categoria:", ["Manutenzione Ordinaria", "Lavori / Ristrutturazione", "Pulizie", "Tasse / Bollette", "Altro"])
             
             col3, col4 = st.columns(2)
-            desc_spesa = col3.text_input("Descrizione / Dettaglio Spesa*")
+            desc_spesa = col3.text_input("Descrizione Spesa*")
             imp_spesa = col4.number_input("Importo (€)", min_value=0.0, step=10.0)
             
-            chi_registra = st.text_input("Inserito da (es. Nome Utente)")
+            chi_reg = st.text_input("Inserito da")
             
-            btn_s = st.form_submit_button("💾 Registra Spesa")
-            if btn_s and desc_spesa.strip():
+            if st.form_submit_button("💾 Salva Spesa") and desc_spesa.strip():
                 c.execute("INSERT INTO uscite (data_spesa, categoria, descrizione, importo, inserito_da) VALUES (?, ?, ?, ?, ?)",
-                          (str(d_spesa), cat_spesa, desc_spesa.strip(), imp_spesa, chi_registra))
+                          (str(d_spesa), cat_spesa, desc_spesa.strip(), imp_spesa, chi_reg))
                 conn.commit()
                 st.success("Spesa registrata!")
                 st.rerun()
@@ -293,7 +249,6 @@ elif menu == "💸 Registro Uscite / Spese":
     spese_df = pd.read_sql_query("SELECT id, data_spesa AS 'Data', categoria AS 'Categoria', descrizione AS 'Descrizione', importo AS 'Importo (€)', inserito_da AS 'Registrato Da' FROM uscite ORDER BY data_spesa DESC", conn)
     if not spese_df.empty:
         st.dataframe(spese_df, use_container_width=True)
-        totale_spese = spese_df["Importo (€)"].sum()
-        st.metric(label="Totale Uscite Registrate", value=f"{totale_spese:.2f} €")
+        st.metric("Totale Uscite", f"{spese_df['Importo (€)'].sum():.2f} €")
     else:
-        st.info("Nessuna spesa o uscita registrata finora.")
+        st.info("Nessuna spesa registrata.")
